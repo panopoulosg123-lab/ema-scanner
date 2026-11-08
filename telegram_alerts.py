@@ -50,13 +50,13 @@ print(f"New EMA crossover alerts: {len(candidates)}")
 failures = 0
 for key, row in candidates:
     direction = "🟢 LONG / ανοδική" if row["Cross"] == "Bullish crossover" else "🔴 SHORT / καθοδική"
-    message = (f"📊 EMA 8/21 CROSSOVER\\n"
-               f"{direction}\\n"
-               f"Asset: {row['Name']} ({row['Ticker']})\\n"
-               f"Αγορά: {row['Market']}\\n"
-               f"Ημερομηνία ημερήσιου κεριού: {row['Date']}\\n"
-               f"EMA8: {row['EMA8']:.4f} | EMA21: {row['EMA21']:.4f}\\n"
-               f"Απόσταση: {row['Distance']:.4f}%\\n"
+    message = (f"📊 EMA 8/21 CROSSOVER\n"
+               f"{direction}\n"
+               f"Asset: {row['Name']} ({row['Ticker']})\n"
+               f"Αγορά: {row['Market']}\n"
+               f"Ημερομηνία ημερήσιου κεριού: {row['Date']}\n"
+               f"EMA8: {row['EMA8']:.4f} | EMA21: {row['EMA21']:.4f}\n"
+               f"Απόσταση: {row['Distance']:.4f}%\n"
                f"Ενημέρωση: όχι επενδυτική σύσταση.")
     payload = urlencode({"chat_id": chat_id, "text": message}).encode("utf-8")
     request = Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, method="POST")
