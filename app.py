@@ -38,12 +38,12 @@ if refresh:
     load_snapshot.clear()
 if force:
     with st.spinner("Εκτελείται νέα σάρωση στον server…"):
-        data = scan(max_items=120, previous=load_snapshot())
+        data = scan(max_items=2000, previous=load_snapshot())
     if not data["rows"]:
         st.error("Η ζωντανή σάρωση απέτυχε. Δοκίμασε τα αποθηκευμένα αποτελέσματα.")
         data = load_snapshot()
     else:
-        st.success("Ολοκληρώθηκε μία επιπλέον ομάδα έως 120 assets. Τα αποτελέσματα αυτής της χειροκίνητης σάρωσης δεν αποθηκεύονται στο GitHub.")
+        st.success("Ολοκληρώθηκε μία επιπλέον ομάδα έως 2.000 assets. Τα αποτελέσματα αυτής της χειροκίνητης σάρωσης δεν αποθηκεύονται στο GitHub.")
 else:
     data = load_snapshot()
 
