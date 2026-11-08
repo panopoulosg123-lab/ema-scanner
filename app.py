@@ -38,7 +38,7 @@ def fetch(ticker):
 categories = st.multiselect("Αγορές", list(UNIVERSES), default=list(UNIVERSES))
 limit = st.number_input("Μέγιστη απόσταση (%)", min_value=0.0, max_value=10.0, value=0.10, step=0.01, format="%.2f")
 warning = st.number_input("Όριο προειδοποίησης (%)", min_value=0.0, max_value=10.0, value=0.15, step=0.01, format="%.2f")
-show_all = st.checkbox("Εμφάνιση και assets εκτός ορίου", value=False)
+show_all = st.checkbox("Εμφάνιση και assets εκτός ορίου", value=True)
 
 if st.button("Σάρωση τώρα", type="primary"):
     items = [(category,name,ticker) for category in categories for name,ticker in UNIVERSES[category].items()]
@@ -62,6 +62,7 @@ if st.button("Σάρωση τώρα", type="primary"):
         st.metric("Εντός ορίου", int((df.Status=="MATCH").sum()))
         st.metric("Πλησιάζουν", int((df.Status=="NEAR").sum()))
         visible = df if show_all else df[df.Status!="OUT"]
+        st.caption(f"Επιτυχής λήψη: {len(df)} από {len(items)} assets · Ελάχιστη απόσταση: {df.Distance.min():.4f}%")
         st.dataframe(visible, hide_index=True, use_container_width=True, column_config={"Distance":st.column_config.NumberColumn("EMA distance %",format="%.4f"),"Price":st.column_config.NumberColumn(format="%.4f"),"EMA8":st.column_config.NumberColumn(format="%.4f"),"EMA21":st.column_config.NumberColumn(format="%.4f")})
         st.download_button("Λήψη CSV", df.to_csv(index=False).encode("utf-8-sig"), "ema_scan.csv", "text/csv")
         st.info("LONG/SHORT only indicates relative EMA position, not a trading recommendation. Alerts appear only when you run a scan; no background notifications.")
