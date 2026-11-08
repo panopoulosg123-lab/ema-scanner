@@ -79,14 +79,14 @@ def fetch_one(item):
             else:
                 return None, f"{ticker}: {str(exc)[:120]}"
 
-def scan(max_items=120, previous=None):
+def scan(max_items=2000, previous=None):
     """Scan one rotating batch and preserve recent successful results."""
     items = expanded_universe()
     previous = previous or {}
     cursor = int(previous.get("next_cursor", 0)) % max(len(items), 1)
     batch = [items[(cursor + i) % len(items)] for i in range(min(max_items, len(items)))]
     rows, errors = [], []
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=8) as pool:
         for row, error in pool.map(fetch_one, batch):
             if row:
                 row["ScannedAt"] = datetime.now(timezone.utc).isoformat()
