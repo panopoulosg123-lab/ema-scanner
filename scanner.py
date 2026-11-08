@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pandas as pd
 import yfinance as yf
+import requests
+from io import StringIO
 
 UNIVERSES = {
  "US Stocks": {"Apple":"AAPL","Microsoft":"MSFT","Nvidia":"NVDA","Amazon":"AMZN","Alphabet":"GOOGL","Tesla":"TSLA","Meta":"META","AMD":"AMD","Netflix":"NFLX","Palantir":"PLTR","SPY ETF":"SPY","QQQ ETF":"QQQ","Broadcom":"AVGO","Costco":"COST","Walmart":"WMT","JPMorgan":"JPM","Visa":"V","Mastercard":"MA","Berkshire":"BRK-B","Exxon":"XOM","Chevron":"CVX","Coca-Cola":"KO","Pepsi":"PEP","Intel":"INTC","Qualcomm":"QCOM","Salesforce":"CRM","Oracle":"ORCL","Uber":"UBER","Disney":"DIS","Boeing":"BA","Caterpillar":"CAT","Goldman Sachs":"GS","Morgan Stanley":"MS","Bank of America":"BAC","Pfizer":"PFE","Eli Lilly":"LLY","Johnson & Johnson":"JNJ","Procter & Gamble":"PG","Home Depot":"HD","McDonald's":"MCD","Nike":"NKE","IBM":"IBM","Cisco":"CSCO","Adobe":"ADBE","Shopify":"SHOP","Coinbase":"COIN","Robinhood":"HOOD","Micron":"MU","Applied Materials":"AMAT","Texas Instruments":"TXN"},
@@ -15,6 +17,40 @@ UNIVERSES = {
  "Crypto": {"Bitcoin":"BTC-USD","Ethereum":"ETH-USD","Solana":"SOL-USD","XRP":"XRP-USD","Cardano":"ADA-USD","Dogecoin":"DOGE-USD","Avalanche":"AVAX-USD","Chainlink":"LINK-USD","Polkadot":"DOT-USD","Litecoin":"LTC-USD","Bitcoin Cash":"BCH-USD","Stellar":"XLM-USD","Uniswap":"UNI-USD","Aave":"AAVE-USD"},
  "Commodities": {"Gold":"GC=F","Silver":"SI=F","Copper":"HG=F","Platinum":"PL=F","Palladium":"PA=F","WTI Oil":"CL=F","Brent Oil":"BZ=F","Natural Gas":"NG=F","Corn":"ZC=F","Wheat":"ZW=F","Soybeans":"ZS=F","Coffee":"KC=F","Sugar":"SB=F","Cocoa":"CC=F","Cotton":"CT=F","Oats":"ZO=F","Soybean Oil":"ZL=F","Soybean Meal":"ZM=F","Live Cattle":"LE=F","Lean Hogs":"HE=F"}
 }
+
+NASDAQ_URLS = [
+ ("https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt", "Symbol", "Security Name", "Test Issue"),
+ ("https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt", "ACT Symbol", "Security Name", "Test Issue"),
+]
+
+def expanded_universe():
+    """Load US-listed securities from Nasdaq Trader's public symbol directories."""
+    items = [(market, name, ticker) for market, names in UNIVERSES.items() for name, ticker in names.items()]
+    seen = {ticker for _, _, ticker in items}
+    for url, symbol_col, name_col, test_col in NASDAQ_URLS:
+        try:
+            response = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 EMA research scanner"})
+            response.raise_for_status()
+            directory = pd.read_csv(StringIO(response.text), sep="|", dtype=str, on_bad_lines="skip").fillna("")
+            for _, row in directory.iterrows():
+                ticker = row.get(symbol_col, "").strip()
+                name = row.get(name_col, "").strip()
+                if not ticker or ticker.startswith("File Creation") or row.get(test_col, "") == "Y":
+                    continue
+                # Exclude warrants, units, preferred issues and other non-common securities.
+                low = name.lower()
+                if any(word in low for word in (" warrant", " warrants", " unit ", " units ", " preferred", " preference", " right ", " rights ", " notes due", " bond", " depositary")):
+                    continue
+                ticker = ticker.replace(".", "-").replace("$", "-")
+                if not all(ch.isalnum() or ch == "-" for ch in ticker) or ticker in seen:
+                    continue
+                seen.add(ticker)
+                market = "US ETFs" if "etf" in low or "exchange traded fund" in low else "US Stocks"
+                items.append((market, name or ticker, ticker))
+        except Exception as exc:
+            print(f"Symbol directory unavailable: {url}: {exc}")
+    # Stable ordering ensures cursor progress across hourly scans.
+    return sorted(items, key=lambda item: (item[0], item[2]))
 
 def fetch_one(item):
     market, name, ticker = item
@@ -43,24 +79,41 @@ def fetch_one(item):
             else:
                 return None, f"{ticker}: {str(exc)[:120]}"
 
-def scan():
-    items = [(market,name,ticker) for market,names in UNIVERSES.items() for name,ticker in names.items()]
+def scan(max_items=120, previous=None):
+    """Scan one rotating batch and preserve recent successful results."""
+    items = expanded_universe()
+    previous = previous or {}
+    cursor = int(previous.get("next_cursor", 0)) % max(len(items), 1)
+    batch = [items[(cursor + i) % len(items)] for i in range(min(max_items, len(items)))]
     rows, errors = [], []
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        for result in pool.map(fetch_one, items):
-            row, error = result
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        for row, error in pool.map(fetch_one, batch):
             if row:
+                row["ScannedAt"] = datetime.now(timezone.utc).isoformat()
                 rows.append(row)
             if error:
                 errors.append(error)
-    rows.sort(key=lambda x: x["Distance"])
-    return {"updated_at":datetime.now(timezone.utc).isoformat(),"total":len(items),"successful":len(rows),"rows":rows,"errors":errors}
+    now = datetime.now(timezone.utc)
+    merged = {}
+    for row in previous.get("rows", []):
+        try:
+            if (now - datetime.fromisoformat(row["ScannedAt"].replace("Z","+00:00"))).total_seconds() <= 48*3600:
+                merged[row["Ticker"]] = row
+        except (KeyError, ValueError, TypeError):
+            pass
+    for row in rows:
+        merged[row["Ticker"]] = row
+    return {"updated_at":now.isoformat(),"total":len(items),"successful":len(merged),
+            "batch_successful":len(rows),"batch_total":len(batch),
+            "next_cursor":(cursor+len(batch)) % max(len(items),1),
+            "rows":sorted(merged.values(),key=lambda x:x["Distance"]),"errors":errors}
 
 if __name__ == "__main__":
-    result = scan()
     target = Path(__file__).parent / "data" / "latest.json"
+    previous = json.loads(target.read_text(encoding="utf-8")) if target.exists() else None
+    result = scan(previous=previous)
+    if result["batch_successful"] == 0:
+        raise SystemExit("No data downloaded this hour; preserve previous snapshot")
     target.parent.mkdir(parents=True,exist_ok=True)
-    if result["successful"] == 0:
-        raise SystemExit("No data downloaded; preserve previous snapshot")
     target.write_text(json.dumps(result,ensure_ascii=False,indent=2,allow_nan=False),encoding="utf-8")
-    print(f"Updated {result['successful']}/{result['total']} assets")
+    print(f"Batch: {result['batch_successful']}/{result['batch_total']}; cached {result['successful']} of {result['total']} discovered")
