@@ -85,3 +85,20 @@ jobs:
             git pull --rebase origin main
             git push origin HEAD:main
           fi
+
+      - name: Notify Telegram on new crossovers
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python telegram_alerts.py
+      - name: Save sent-alert history
+        if: always()
+        run: |
+          if [ -f data/telegram_sent.json ]; then
+            git add data/telegram_sent.json
+            if ! git diff --cached --quiet; then
+              git commit -m "Record Telegram crossover alerts"
+              git pull --rebase origin main
+              git push origin HEAD:main
+            fi
+          fi
