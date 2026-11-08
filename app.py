@@ -1,72 +1,74 @@
-import streamlit as st
+import json
+from datetime import datetime, timezone
+from pathlib import Path
 import pandas as pd
-import yfinance as yf
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import requests
+import streamlit as st
+from scanner import UNIVERSES, scan
 
 st.set_page_config(page_title="EMA 8/21 Scanner", layout="wide")
 st.title("EMA 8/21 Scanner")
-st.caption("Daily · Yahoo Finance data (may be delayed)")
+st.caption("Daily · EMA 8/21 · hourly cloud snapshots · Yahoo Finance data may be delayed")
+SNAPSHOT_URL = "https://raw.githubusercontent.com/panopoulosg123-lab/ema-scanner/main/data/latest.json"
 
-UNIVERSES = {
-    "US Stocks": {"Apple":"AAPL","Microsoft":"MSFT","Nvidia":"NVDA","Amazon":"AMZN","Alphabet":"GOOGL","Tesla":"TSLA","Meta":"META","AMD":"AMD","Netflix":"NFLX","Palantir":"PLTR","SPY ETF":"SPY","QQQ ETF":"QQQ"},
-    "Greek Stocks": {"Alpha Bank":"ALPHA.AT","Eurobank":"EUROB.AT","National Bank":"ETE.AT","Piraeus":"TPEIR.AT","OPAP":"OPAP.AT","OTE":"HTO.AT","Metlen":"METLEN.AT","Jumbo":"BELA.AT"},
-    "Crypto": {"Bitcoin":"BTC-USD","Ethereum":"ETH-USD","Solana":"SOL-USD","XRP":"XRP-USD","Cardano":"ADA-USD","Dogecoin":"DOGE-USD"},
-    "Commodities": {"Gold":"GC=F","Silver":"SI=F","Copper":"HG=F","Platinum":"PL=F","Palladium":"PA=F","WTI Oil":"CL=F","Brent Oil":"BZ=F","Natural Gas":"NG=F","Corn":"ZC=F","Wheat":"ZW=F","Soybeans":"ZS=F","Coffee":"KC=F","Sugar":"SB=F","Cocoa":"CC=F","Cotton":"CT=F"}
-}
-
-@st.cache_data(ttl=900, show_spinner=False)
-def fetch(ticker):
-    frame = yf.download(ticker, period="1y", interval="1d", auto_adjust=True, progress=False, threads=False)
-    if frame.empty:
+@st.cache_data(ttl=120, show_spinner=False)
+def load_snapshot():
+    try:
+        response = requests.get(SNAPSHOT_URL, timeout=12, headers={"Cache-Control":"no-cache"})
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data.get("rows"),list):
+            raise ValueError("Invalid snapshot")
+        return data
+    except Exception:
+        local = Path(__file__).parent / "data" / "latest.json"
+        if local.exists():
+            return json.loads(local.read_text(encoding="utf-8"))
         return None
-    close = frame["Close"]
-    if isinstance(close, pd.DataFrame):
-        close = close.iloc[:, 0]
-    close = close.dropna()
-    if len(close) < 50:
-        return None
-    e8 = close.ewm(span=8, adjust=False).mean()
-    e21 = close.ewm(span=21, adjust=False).mean()
-    if e21.iloc[-1] == 0:
-        return None
-    distance = abs(e8.iloc[-1] - e21.iloc[-1]) / abs(e21.iloc[-1]) * 100
-    previous = e8.iloc[-2] - e21.iloc[-2]
-    current = e8.iloc[-1] - e21.iloc[-1]
-    cross = "Bullish crossover" if previous <= 0 < current else "Bearish crossover" if previous >= 0 > current else "—"
-    return {"Price":float(close.iloc[-1]),"EMA8":float(e8.iloc[-1]),"EMA21":float(e21.iloc[-1]),"Distance":float(distance),"Direction":"LONG" if current>0 else "SHORT" if current<0 else "NEUTRAL","Cross":cross,"Date":str(close.index[-1].date())}
 
 categories = st.multiselect("Αγορές", list(UNIVERSES), default=list(UNIVERSES))
 limit = st.number_input("Μέγιστη απόσταση (%)", min_value=0.0, max_value=10.0, value=0.10, step=0.01, format="%.2f")
 warning = st.number_input("Όριο προειδοποίησης (%)", min_value=0.0, max_value=10.0, value=0.15, step=0.01, format="%.2f")
+direction = st.selectbox("Κατεύθυνση", ["ALL","LONG","SHORT"])
 show_all = st.checkbox("Εμφάνιση και assets εκτός ορίου", value=True)
+force = st.button("Νέα σάρωση τώρα", type="primary")
+refresh = st.button("Ανανέωση αποθηκευμένων αποτελεσμάτων")
 
-if st.button("Σάρωση τώρα", type="primary"):
-    items = [(category,name,ticker) for category in categories for name,ticker in UNIVERSES[category].items()]
-    rows, errors = [], []
-    with st.spinner("Λήψη ημερήσιων δεδομένων…"):
-        with ThreadPoolExecutor(max_workers=5) as pool:
-            futures = {pool.submit(fetch,ticker):(category,name,ticker) for category,name,ticker in items}
-            for future in as_completed(futures):
-                category,name,ticker = futures[future]
-                try:
-                    data = future.result()
-                    if data:
-                        rows.append({"Market":category,"Name":name,"Ticker":ticker,**data})
-                    else:
-                        errors.append(ticker)
-                except Exception:
-                    errors.append(ticker)
-    if rows:
-        df = pd.DataFrame(rows).sort_values("Distance")
-        df["Status"] = df.Distance.apply(lambda d: "MATCH" if d <= limit else "NEAR" if d <= warning else "OUT")
-        st.metric("Εντός ορίου", int((df.Status=="MATCH").sum()))
-        st.metric("Πλησιάζουν", int((df.Status=="NEAR").sum()))
-        visible = df if show_all else df[df.Status!="OUT"]
-        st.caption(f"Επιτυχής λήψη: {len(df)} από {len(items)} assets · Ελάχιστη απόσταση: {df.Distance.min():.4f}%")
-        st.dataframe(visible, hide_index=True, use_container_width=True, column_config={"Distance":st.column_config.NumberColumn("EMA distance %",format="%.4f"),"Price":st.column_config.NumberColumn(format="%.4f"),"EMA8":st.column_config.NumberColumn(format="%.4f"),"EMA21":st.column_config.NumberColumn(format="%.4f")})
-        st.download_button("Λήψη CSV", df.to_csv(index=False).encode("utf-8-sig"), "ema_scan.csv", "text/csv")
-        st.info("LONG/SHORT only indicates relative EMA position, not a trading recommendation. Alerts appear only when you run a scan; no background notifications.")
+if refresh:
+    load_snapshot.clear()
+if force:
+    with st.spinner("Εκτελείται νέα σάρωση στον server…"):
+        data = scan()
+    if not data["rows"]:
+        st.error("Η ζωντανή σάρωση απέτυχε. Δοκίμασε τα αποθηκευμένα αποτελέσματα.")
+        data = load_snapshot()
     else:
-        st.warning("Δεν βρέθηκαν διαθέσιμα δεδομένα.")
-    if errors:
-        st.warning("Αδυναμία λήψης: "+", ".join(errors))
+        st.success("Η νέα σάρωση ολοκληρώθηκε. Τα αποτελέσματα αυτής της σάρωσης δεν αποθηκεύονται στο GitHub.")
+else:
+    data = load_snapshot()
+
+if data is None:
+    st.warning("Δεν υπάρχει ακόμη αποθηκευμένη σάρωση. Η πρώτη εκτέλεση του GitHub Actions μπορεί να γίνει χειροκίνητα από την καρτέλα Actions. Μπορείς επίσης να πατήσεις «Νέα σάρωση τώρα».")
+else:
+    stamp = datetime.fromisoformat(data["updated_at"].replace("Z","+00:00"))
+    age = (datetime.now(timezone.utc)-stamp).total_seconds()/3600
+    st.caption(f"Τελευταία σάρωση: {stamp.strftime('%Y-%m-%d %H:%M UTC')} · {data['successful']}/{data['total']} assets · {age:.1f} ώρες πριν")
+    if age > 2:
+        st.warning("Τα αποθηκευμένα δεδομένα είναι παλαιότερα από 2 ώρες. Έλεγξε την καρτέλα GitHub Actions ή πάτησε «Νέα σάρωση τώρα».")
+    if data.get("errors"):
+        st.info(f"Αδυναμία λήψης για {len(data['errors'])} assets. Δεν εμφανίζονται ως μηδενικά σήματα.")
+    if data["rows"]:
+        df = pd.DataFrame(data["rows"])
+        df = df[df.Market.isin(categories)]
+        if direction != "ALL":
+            df = df[df.Direction == direction]
+        df = df.sort_values("Distance")
+        df["Status"] = df.Distance.apply(lambda d: "MATCH" if d <= limit else "NEAR" if d <= warning else "OUT")
+        c1,c2,c3 = st.columns(3)
+        c1.metric("Εντός ορίου",int((df.Status=="MATCH").sum()))
+        c2.metric("Πλησιάζουν",int((df.Status=="NEAR").sum()))
+        c3.metric("Συνολικά διαθέσιμα",len(df))
+        visible = df if show_all else df[df.Status!="OUT"]
+        st.dataframe(visible,hide_index=True,use_container_width=True,column_config={"Distance":st.column_config.NumberColumn("EMA distance %",format="%.4f"),"EMA8":st.column_config.NumberColumn(format="%.4f"),"EMA21":st.column_config.NumberColumn(format="%.4f"),"Price":st.column_config.NumberColumn(format="%.4f")})
+        st.download_button("Λήψη CSV",df.to_csv(index=False).encode("utf-8-sig"),"ema_scan.csv","text/csv")
+        st.info("Οι ενδείξεις MATCH/NEAR εμφανίζονται στην εφαρμογή, δεν αποστέλλονται ως push/email. LONG/SHORT είναι μόνο η σχετική θέση των EMA, όχι επενδυτική σύσταση.")
