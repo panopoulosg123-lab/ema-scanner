@@ -4,23 +4,45 @@ on:
     - cron: '7 * * * *'
   workflow_dispatch:
 permissions:
-  contents: write
+  contents: read
 concurrency:
   group: ema-hourly
   cancel-in-progress: false
 jobs:
-  scan:
-    strategy:
-      fail-fast: false
-      max-parallel: 8
-      matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+  prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
-    permissions:
-      contents: read
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Build common manifest
+        env:
+          SCAN_TARGET: '2000'
+        run: python prepare_scan.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ema-manifest
+          path: manifest/assets.json
+          retention-days: 2
+  scan:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      max-parallel: 18
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ema-manifest
+          path: manifest
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -29,8 +51,7 @@ jobs:
       - name: Scan assigned assets
         env:
           SHARD_INDEX: ${{ matrix.shard }}
-          SHARD_COUNT: '8'
-          SCAN_TARGET: '2000'
+          SHARD_COUNT: '18'
         run: python worker.py
       - uses: actions/upload-artifact@v4
         if: always()
@@ -40,10 +61,12 @@ jobs:
           if-no-files-found: ignore
           retention-days: 2
   merge:
-    needs: scan
-    if: always()
+    needs: [prepare, scan]
+    if: always() && needs.prepare.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -52,7 +75,7 @@ jobs:
           path: shards
           merge-multiple: true
       - run: python merge_shards.py
-      - name: Save latest snapshot
+      - name: Publish latest snapshot
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
