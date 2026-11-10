@@ -8,7 +8,7 @@ from scanner import UNIVERSES, scan
 
 st.set_page_config(page_title="EMA 8/21 Scanner", layout="wide")
 st.title("EMA 8/21 Scanner")
-st.caption("Daily · EMA 8/21 · hourly cloud snapshots · Yahoo Finance data may be delayed")
+st.caption("Daily / Weekly · EMA 8/21 · hourly cloud snapshots · Yahoo Finance data may be delayed")
 SNAPSHOT_URL = "https://raw.githubusercontent.com/panopoulosg123-lab/ema-scanner/main/data/latest.json"
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -26,6 +26,7 @@ def load_snapshot():
             return json.loads(local.read_text(encoding="utf-8"))
         return None
 
+timeframe = st.radio("Χρονικό διάστημα", ["Ημερήσιο (1D)", "Εβδομαδιαίο (1W)"], horizontal=True)
 categories = st.multiselect("Αγορές", list(UNIVERSES) + ["US ETFs"], default=list(UNIVERSES) + ["US ETFs"])
 limit = st.number_input("Μέγιστη απόσταση (%)", min_value=0.0, max_value=10.0, value=0.10, step=0.01, format="%.2f")
 warning = st.number_input("Όριο προειδοποίησης (%)", min_value=0.0, max_value=10.0, value=0.15, step=0.01, format="%.2f")
@@ -59,7 +60,15 @@ else:
         st.info(f"Αδυναμία λήψης για {len(data['errors'])} assets. Δεν εμφανίζονται ως μηδενικά σήματα.")
     if data["rows"]:
         df = pd.DataFrame(data["rows"])
-        df = df[df.Market.isin(categories)]
+        df = df[df.Market.isin(categories)].copy()
+        if timeframe == "Εβδομαδιαίο (1W)":
+            df = df.dropna(subset=["WeeklyEMA8", "WeeklyEMA21", "WeeklyDistance", "WeeklyDirection"])
+            df["EMA8"] = df["WeeklyEMA8"]
+            df["EMA21"] = df["WeeklyEMA21"]
+            df["Distance"] = df["WeeklyDistance"]
+            df["Direction"] = df["WeeklyDirection"]
+            df["Cross"] = df["WeeklyCross"]
+            df["Date"] = df["WeeklyDate"]
         if direction != "ALL":
             df = df[df.Direction == direction]
         df = df.sort_values("Distance")
