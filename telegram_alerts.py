@@ -24,29 +24,32 @@ sent = {key: value for key, value in sent.items() if value >= cutoff}
 now = datetime.now(timezone.utc)
 candidates = []
 for row in data.get("rows", []):
-    cross = row.get("Cross")
-    if cross not in ("Bullish crossover", "Bearish crossover"):
-        continue
-    date = str(row.get("Date", ""))
-    ticker = str(row.get("Ticker", ""))
     try:
         scanned_at = datetime.fromisoformat(row["ScannedAt"].replace("Z", "+00:00"))
         if (now - scanned_at).total_seconds() > 3 * 3600:
             continue
-        if (now.date() - datetime.fromisoformat(date).date()).days > 4:
-            continue
     except (KeyError, ValueError, TypeError):
         continue
-    key = f"{ticker}|{date}|{cross}"
-    if key not in sent:
-        candidates.append((key, row))
+    for timeframe, prefix in (("1D", ""), ("1W", "Weekly")):
+        cross = row.get(prefix + "Cross")
+        if cross not in ("Bullish crossover", "Bearish crossover"):
+            continue
+        date = str(row.get(prefix + "Date", ""))
+        try:
+            if (now.date() - datetime.fromisoformat(date).date()).days > (4 if timeframe == "1D" else 10):
+                continue
+        except ValueError:
+            continue
+        key = f"{row['Ticker']}|{timeframe}|{date}|{cross}"
+        if key not in sent:
+            candidates.append((key, row, timeframe, cross, date))
 
 print(f"New EMA crossover alerts: {len(candidates)}")
 if candidates:
-    bullish = sorted((r for _, r in candidates if r["Cross"] == "Bullish crossover"), key=lambda r: r["Ticker"])
-    bearish = sorted((r for _, r in candidates if r["Cross"] == "Bearish crossover"), key=lambda r: r["Ticker"])
+    bullish = sorted((c for c in candidates if c[3] == "Bullish crossover"), key=lambda c: (c[2], c[1]["Ticker"]))
+    bearish = sorted((c for c in candidates if c[3] == "Bearish crossover"), key=lambda c: (c[2], c[1]["Ticker"]))
     lines = [
-        "📊 EMA 8/21 — Νέες διασταυρώσεις",
+        "📊 EMA 8/21 — Νέες διασταυρώσεις 1D / 1W",
         f"🟢 LONG: {len(bullish)} | 🔴 SHORT: {len(bearish)}",
         "",
     ]
@@ -59,8 +62,8 @@ if candidates:
         if len("\n".join(lines + [heading])) > 3650:
             break
         lines.append(heading)
-        for row in rows:
-            entry = f"• {row['Ticker']} — {row['Name']} ({row['Date']})"
+        for _, row, timeframe, _, date in rows:
+            entry = f"• [{timeframe}] {row['Ticker']} — {row['Name']} ({date})"
             if len("\n".join(lines + [entry])) > 3650:
                 break
             lines.append(entry)
@@ -80,8 +83,8 @@ if candidates:
     except Exception:
         print("Telegram digest delivery failed (details hidden)")
         raise SystemExit("Telegram notification failed; alerts remain eligible for retry")
-    for key, row in candidates:
-        sent[key] = row["Date"]
+    for key, row, timeframe, cross, date in candidates:
+        sent[key] = date
     print(f"Telegram: sent one digest for {len(candidates)} new crossovers")
 else:
     print("Telegram: no new crossovers; no message sent")
