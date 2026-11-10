@@ -3,7 +3,7 @@ import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -72,7 +72,26 @@ def fetch_one(item):
             prior = float(e8.iloc[-2]-e21.iloc[-2])
             delta = a-b
             cross = "Bullish crossover" if prior <= 0 < delta else "Bearish crossover" if prior >= 0 > delta else "—"
-            return {"Market":market,"Name":name,"Ticker":ticker,"Price":float(close.iloc[-1]),"EMA8":a,"EMA21":b,"Distance":distance,"Direction":"LONG" if delta>0 else "SHORT" if delta<0 else "NEUTRAL","Cross":cross,"Date":str(close.index[-1].date())}, None
+            # Weekly EMA on fully completed Friday-ending weeks only.
+            weekly = close.resample("W-FRI").last().dropna()
+            today = datetime.now(timezone.utc).date()
+            this_friday = today + timedelta(days=(4 - today.weekday()) % 7)
+            # Do not use the current week's still-forming candle.
+            if today.weekday() <= 4:
+                weekly = weekly[weekly.index.date < this_friday]
+            if len(weekly) >= 22:
+                w8 = weekly.ewm(span=8, adjust=False).mean()
+                w21 = weekly.ewm(span=21, adjust=False).mean()
+                wa, wb = float(w8.iloc[-1]), float(w21.iloc[-1])
+                wprior = float(w8.iloc[-2] - w21.iloc[-2])
+                wdelta = wa - wb
+                wcross = "Bullish crossover" if wprior <= 0 < wdelta else "Bearish crossover" if wprior >= 0 > wdelta else "—"
+                weekly_result = {"EMA8": wa, "EMA21": wb, "Distance": abs(wdelta) / abs(wb) * 100,
+                                 "Direction": "LONG" if wdelta > 0 else "SHORT" if wdelta < 0 else "NEUTRAL",
+                                 "Cross": wcross, "Date": str(weekly.index[-1].date())}
+            else:
+                weekly_result = None
+            return {"Market":market,"Name":name,"Ticker":ticker,"Price":float(close.iloc[-1]),"EMA8":a,"EMA21":b,"Distance":distance,"Direction":"LONG" if delta>0 else "SHORT" if delta<0 else "NEUTRAL","Cross":cross,"Date":str(close.index[-1].date()),"Weekly":weekly_result}, None
         except Exception as exc:
             if attempt == 0:
                 time.sleep(1)
