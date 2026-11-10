@@ -1,11 +1,6 @@
-"""Send one Telegram notification per asset/date/crossover after a completed scan.
-
-Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID as GitHub Actions secrets.
-Only successfully delivered alerts are added to the deduplication state.
-"""
+"""Send one compact Telegram digest per scan, not one message per asset."""
 import json
 import os
-import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from urllib.parse import urlencode
@@ -38,7 +33,6 @@ for row in data.get("rows", []):
         scanned_at = datetime.fromisoformat(row["ScannedAt"].replace("Z", "+00:00"))
         if (now - scanned_at).total_seconds() > 3 * 3600:
             continue
-        # Prevent a backlog of historical alerts when first enabled.
         if (now.date() - datetime.fromisoformat(date).date()).days > 4:
             continue
     except (KeyError, ValueError, TypeError):
@@ -46,32 +40,51 @@ for row in data.get("rows", []):
     key = f"{ticker}|{date}|{cross}"
     if key not in sent:
         candidates.append((key, row))
+
 print(f"New EMA crossover alerts: {len(candidates)}")
-failures = 0
-for key, row in candidates:
-    direction = "🟢 LONG / ανοδική" if row["Cross"] == "Bullish crossover" else "🔴 SHORT / καθοδική"
-    message = (f"📊 EMA 8/21 CROSSOVER\n"
-               f"{direction}\n"
-               f"Asset: {row['Name']} ({row['Ticker']})\n"
-               f"Αγορά: {row['Market']}\n"
-               f"Ημερομηνία ημερήσιου κεριού: {row['Date']}\n"
-               f"EMA8: {row['EMA8']:.4f} | EMA21: {row['EMA21']:.4f}\n"
-               f"Απόσταση: {row['Distance']:.4f}%\n"
-               f"Ενημέρωση: όχι επενδυτική σύσταση.")
+if candidates:
+    bullish = sorted((r for _, r in candidates if r["Cross"] == "Bullish crossover"), key=lambda r: r["Ticker"])
+    bearish = sorted((r for _, r in candidates if r["Cross"] == "Bearish crossover"), key=lambda r: r["Ticker"])
+    lines = [
+        "📊 EMA 8/21 — Νέες διασταυρώσεις",
+        f"🟢 LONG: {len(bullish)} | 🔴 SHORT: {len(bearish)}",
+        "",
+    ]
+    # Telegram sendMessage supports at most 4096 characters.
+    # Keep one message per scan, with a total count when the list is long.
+    shown = 0
+    for heading, rows in (("🟢 LONG", bullish), ("🔴 SHORT", bearish)):
+        if not rows:
+            continue
+        if len("\n".join(lines + [heading])) > 3650:
+            break
+        lines.append(heading)
+        for row in rows:
+            entry = f"• {row['Ticker']} — {row['Name']} ({row['Date']})"
+            if len("\n".join(lines + [entry])) > 3650:
+                break
+            lines.append(entry)
+            shown += 1
+        lines.append("")
+    if shown < len(candidates):
+        lines.append(f"…και {len(candidates) - shown} ακόμη διασταυρώσεις.")
+    lines.append("Δεν αποτελεί επενδυτική σύσταση.")
+    message = "\n".join(lines)
     payload = urlencode({"chat_id": chat_id, "text": message}).encode("utf-8")
     request = Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, method="POST")
     try:
-        with urlopen(request, timeout=15) as response:
+        with urlopen(request, timeout=20) as response:
             result = json.loads(response.read().decode("utf-8"))
         if not result.get("ok"):
-            raise ValueError("Telegram rejected message")
-        sent[key] = row["Date"]
-        time.sleep(0.15)
+            raise ValueError("Telegram rejected digest")
     except Exception:
-        failures += 1
-        print(f"Telegram delivery failed for {row['Ticker']} (details hidden)")
+        print("Telegram digest delivery failed (details hidden)")
+        raise SystemExit("Telegram notification failed; alerts remain eligible for retry")
+    for key, row in candidates:
+        sent[key] = row["Date"]
+    print(f"Telegram: sent one digest for {len(candidates)} new crossovers")
+else:
+    print("Telegram: no new crossovers; no message sent")
+
 state_path.parent.mkdir(exist_ok=True)
 state_path.write_text(json.dumps({"sent": sent}, ensure_ascii=False, indent=2), encoding="utf-8")
-print(f"Telegram: delivered {len(candidates)-failures}, failed {failures}")
-if failures:
-    raise SystemExit("Some Telegram messages failed; successful sends were recorded locally")
